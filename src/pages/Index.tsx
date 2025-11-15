@@ -51,7 +51,7 @@ const Index = () => {
       <section id="about" className="py-20 bg-gradient-to-br from-primary to-primary/90 text-primary-foreground">
         <div className="container mx-auto px-4">
           <div className="max-w-4xl mx-auto text-center">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6">WE ARE BASED IN PUNE, BANGALORE & GUJRAT</h2>
+            <h2 className="text-4xl md:text-5xl font-bold mb-6">WE ARE BASED IN PUNE, BANGALORE & AHMEDABAD</h2>
             <p className="text-xl mb-8 text-primary-foreground/90">
               With a strong presence in India's leading IT hubs, we deliver world-class healthcare services that combine
               technology, expertise, and dedication to excellence.
