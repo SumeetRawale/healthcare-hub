@@ -35,12 +35,12 @@ const Contact = () => {
                     method="POST"
                   >
                     {/* Hidden controls */}
-                    <input type="hidden" name="_captcha" value="false" />
-                    <input type="hidden" name="_template" value="table" />
+                    <input type="hidden" value="false" />
+                    <input type="hidden" value="table" />
                     <input type="hidden" name="_subject" value="New Contact Inquiry" />
                     <input type="hidden" name="access_key" value="9bd5c584-47dc-48d5-8666-9f5d326ccd42" />
                     <input type="hidden" name="redirect" value="https://main.d19oq5tyfshd58.amplifyapp.com/thanks" />
-                    <div className="grid md:grid-cols-2 gap-4">
+                    <div className="grid md:grid-cols-2 gap-4"> 
                       <div>
                         <label className="block text-sm font-medium mb-2">First Name</label>
                         <Input name="firstName" placeholder="John" required />
