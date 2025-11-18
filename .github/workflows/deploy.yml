@@ -1,74 +1,125 @@
-name: Build and Deploy React to EC2
+name: Build and Deploy to EC2
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    defaults:
+      run:
+        shell: bash -l -e
 
-      - name: Use Node.js
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 18.x
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (npm ci || npm install)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --prefer-offline --no-audit --progress=false || npm install --no-audit --progress=false
+          else
+            npm install --no-audit --progress=false
+          fi
 
       - name: Build
-        run: npm run build
+        run: |
+          # adapt if your build command differs
+          npm run build
 
-      - name: Prepare SSH key
+      - name: Locate build output
+        id: locate
+        run: |
+          # prefer dist (vite) then build (create-react-app)
+          if [ -d "./dist" ]; then
+            echo "build_dir=dist" >> $GITHUB_OUTPUT
+          elif [ -d "./build" ]; then
+            echo "build_dir=build" >> $GITHUB_OUTPUT
+          else
+            echo "No build output folder found. Listing top-level files for debugging:"
+            ls -la
+            exit 1
+          fi
+
+      - name: Show build output (debug)
+        run: |
+          echo "Using build_dir: ${{ steps.locate.outputs.build_dir }}"
+          ls -la "${{ steps.locate.outputs.build_dir }}" | sed -n '1,120p'
+
+      - name: Prepare SSH key (write + convert + fingerprint)
         env:
           SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{secrets.EC2_HOST}}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           mkdir -p ~/.ssh
+          # write private key exactly as stored in secret
           printf "%s\n" "$SSH_KEY" > ~/.ssh/id_rsa
-          #echo "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          # derive public key from private and show fingerprint (for debugging)
+          # convert to PEM format (if in new OpenSSH format). silent if not needed.
+          if ssh-keygen -p -f ~/.ssh/id_rsa -N "" -m PEM 2>/dev/null; then
+            echo "Converted key to PEM format"
+          else
+            echo "Conversion to PEM skipped or failed (maybe already PEM or passphrase-protected)"
+          fi
+
+          # derive public key on runner and print fingerprint (for verification)
           ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
           echo "Runner key fingerprint:"
           ssh-keygen -lf ~/.ssh/id_rsa.pub
 
-          # add host to known_hosts
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          # add host key to known_hosts to avoid interactive prompt
+          if [ -n "$EC2_HOST" ]; then
+            ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
+          fi
 
-      - name: Deploy (rsync -> symlink -> reload nginx)
+      - name: Deploy build to EC2 (rsync -> symlink -> reload)
         env:
+          BUILD_DIR: ${{ steps.locate.outputs.build_dir }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_REMOTE_BASE: ${{ secrets.EC2_REMOTE_BASE }}
           EC2_PORT: ${{ secrets.EC2_SSH_PORT }}
         run: |
-          set -e
+          set -euo pipefail
           TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
           RELEASE_DIR="${EC2_REMOTE_BASE}/releases/${TIMESTAMP}"
           SSH_OPTS=""
-          if [ -n "$EC2_PORT" ]; then SSH_OPTS="-p $EC2_PORT"; fi
+          if [ -n "${EC2_PORT:-}" ]; then SSH_OPTS="-p ${EC2_PORT}"; fi
 
-          ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_rsa $SSH_OPTS ${EC2_USER}@${EC2_HOST} "mkdir -p ${RELEASE_DIR} && chown -R ${EC2_USER}:${EC2_USER} ${EC2_REMOTE_BASE} || true"
+          echo "Creating remote release directory: ${RELEASE_DIR}"
+          ssh $SSH_OPTS -i ~/.ssh/id_rsa ${EC2_USER}@${EC2_HOST} "mkdir -p ${RELEASE_DIR} && chown -R ${EC2_USER}:${EC2_USER} ${EC2_REMOTE_BASE} || true"
 
-          RSYNC_OPTS="-az --delete --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r"
-          if [ -n "$EC2_PORT" ]; then
-            rsync $RSYNC_OPTS -e "ssh -i ~/.ssh/id_rsa -p $EC2_PORT -o StrictHostKeyChecking=yes" build/ ${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/
-          else
-            rsync $RSYNC_OPTS -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes" build/ ${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/
-          fi
+          echo "Starting rsync from ${BUILD_DIR}/ to ${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/"
+          rsync -az --delete --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r -e "ssh -i ~/.ssh/id_rsa ${SSH_OPTS} -o StrictHostKeyChecking=yes" "${BUILD_DIR}/" "${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/"
 
+          echo "Swapping symlink to new release and reloading nginx"
           SWAP_CMD="ln -sfn ${RELEASE_DIR} ${EC2_REMOTE_BASE}/current && chown -h ${EC2_USER}:${EC2_USER} ${EC2_REMOTE_BASE}/current && chown -R ${EC2_USER}:${EC2_USER} ${RELEASE_DIR} && sudo systemctl reload nginx || sudo nginx -s reload"
-          if [ -n "$EC2_PORT" ]; then
-            ssh -i ~/.ssh/id_rsa -p $EC2_PORT ${EC2_USER}@${EC2_HOST} "$SWAP_CMD"
+
+          if [ -n "${EC2_PORT:-}" ]; then
+            ssh -i ~/.ssh/id_rsa -p ${EC2_PORT} ${EC2_USER}@${EC2_HOST} "${SWAP_CMD}"
           else
-            ssh -i ~/.ssh/id_rsa ${EC2_USER}@${EC2_HOST} "$SWAP_CMD"
+            ssh -i ~/.ssh/id_rsa ${EC2_USER}@${EC2_HOST} "${SWAP_CMD}"
           fi
 
-      - name: Cleanup
-        run: rm -f ~/.ssh/id_rsa
+      - name: Cleanup (optional)
+        if: always()
+        run: |
+          # remove id file from runner workspace as hygiene (no traces)
+          shred -u ~/.ssh/id_rsa || rm -f ~/.ssh/id_rsa || true
+          rm -f ~/.ssh/id_rsa.pub || true
+
