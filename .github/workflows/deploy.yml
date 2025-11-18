@@ -26,11 +26,20 @@ jobs:
       - name: Prepare SSH key
         env:
           SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{secrets.EC2_HOST}}
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          printf "%s\n" "$SSH_KEY" > ~/.ssh/id_rsa
+          #echo "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+          # derive public key from private and show fingerprint (for debugging)
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+          echo "Runner key fingerprint:"
+          ssh-keygen -lf ~/.ssh/id_rsa.pub
+
+          # add host to known_hosts
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy (rsync -> symlink -> reload nginx)
         env:
