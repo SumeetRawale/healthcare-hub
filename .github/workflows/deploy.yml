@@ -1,0 +1,65 @@
+name: Build and Deploy React to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Prepare SSH key
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy (rsync -> symlink -> reload nginx)
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_REMOTE_BASE: ${{ secrets.EC2_REMOTE_BASE }}
+          EC2_PORT: ${{ secrets.EC2_SSH_PORT }}
+        run: |
+          set -e
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          RELEASE_DIR="${EC2_REMOTE_BASE}/releases/${TIMESTAMP}"
+          SSH_OPTS=""
+          if [ -n "$EC2_PORT" ]; then SSH_OPTS="-p $EC2_PORT"; fi
+
+          ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_rsa $SSH_OPTS ${EC2_USER}@${EC2_HOST} "mkdir -p ${RELEASE_DIR} && chown -R ${EC2_USER}:${EC2_USER} ${EC2_REMOTE_BASE} || true"
+
+          RSYNC_OPTS="-az --delete --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r"
+          if [ -n "$EC2_PORT" ]; then
+            rsync $RSYNC_OPTS -e "ssh -i ~/.ssh/id_rsa -p $EC2_PORT -o StrictHostKeyChecking=yes" build/ ${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/
+          else
+            rsync $RSYNC_OPTS -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes" build/ ${EC2_USER}@${EC2_HOST}:${RELEASE_DIR}/
+          fi
+
+          SWAP_CMD="ln -sfn ${RELEASE_DIR} ${EC2_REMOTE_BASE}/current && chown -h ${EC2_USER}:${EC2_USER} ${EC2_REMOTE_BASE}/current && chown -R ${EC2_USER}:${EC2_USER} ${RELEASE_DIR} && sudo systemctl reload nginx || sudo nginx -s reload"
+          if [ -n "$EC2_PORT" ]; then
+            ssh -i ~/.ssh/id_rsa -p $EC2_PORT ${EC2_USER}@${EC2_HOST} "$SWAP_CMD"
+          else
+            ssh -i ~/.ssh/id_rsa ${EC2_USER}@${EC2_HOST} "$SWAP_CMD"
+          fi
+
+      - name: Cleanup
+        run: rm -f ~/.ssh/id_rsa
