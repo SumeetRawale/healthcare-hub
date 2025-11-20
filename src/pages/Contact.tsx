@@ -114,7 +114,7 @@ const Contact = () => {
                         +91 788-789-8196
                       </a>
                       <p className="text-xs text-muted-foreground mt-2">
-                        Available Monday - Friday, 9:00 AM - 6:00 PM IST
+                        Available Monday - Friday,9:30 AM - 6:30 PM IST
                       </p>
                     </div>
                   </div>
